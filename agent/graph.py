@@ -1,0 +1,262 @@
+"""LangGraph StateGraph for the customer support pipeline.
+
+This replaces the fixed procedural pipeline in support_agent.py's _process()
+with an explicitly traced graph. Every node is still deterministic Python code —
+the safety gates (auto-send policy, escalation rules, category-based data fetching)
+are all hard-coded in nodes, NOT left to the LLM to decide.
+
+The public interface of CustomerSupportAgent (handle_ticket, handle_followup) is
+unchanged — only _process() is swapped to invoke the graph.
+"""
+
+import time
+from typing import Any, Dict, List, Optional, TypedDict
+
+import structlog
+from langgraph.graph import END, START, StateGraph
+
+from agent.config import settings
+from agent.models import (
+    ClassificationResult,
+    MessageSender,
+    ResponseSuggestion,
+    SupportTicket,
+    TicketMessage,
+    TicketPriority,
+)
+from agent.observability import record_graph_step
+
+logger = structlog.get_logger(__name__)
+
+ORDER_RELEVANT_CATEGORIES = {"order_status", "shipping", "returns", "refund"}
+KB_RELEVANT_CATEGORIES = {"product_question", "returns", "refund", "shipping", "technical", "other"}
+REPEAT_CONTACT_ESCALATION_THRESHOLD = 3
+_PRIORITY_ORDER = [
+    TicketPriority.LOW, TicketPriority.NORMAL, TicketPriority.HIGH,
+    TicketPriority.URGENT, TicketPriority.CRITICAL,
+]
+
+
+class AgentState(TypedDict):
+    ticket: SupportTicket
+    history: List[TicketMessage]
+    customer_message_count: int
+    classification: Optional[ClassificationResult]
+    order_context: Optional[str]
+    order_used: bool
+    knowledge_context: Optional[str]
+    kb_used: bool
+    suggestion: Optional[ResponseSuggestion]
+    auto_sent: bool
+
+
+def build_agent_graph(classifier, response_engine, shopify):
+    """Build and return a compiled StateGraph.
+
+    The graph nodes capture ``classifier`` / ``response_engine`` / ``shopify``
+    by closure, so tests can wire any mocks they like before ``_process()``
+    first accesses the graph.
+    """
+    workflow = StateGraph(AgentState)
+
+    # ── Node implementations ─────────────────────────────────────
+
+    async def load_history(state: AgentState) -> Dict[str, Any]:
+        from agent.storage import store
+
+        history = await store.get_messages(state["ticket"].id)
+        customer_message_count = sum(
+            1 for m in history if m.sender_type.value == "customer"
+        )
+        return {
+            "history": history,
+            "customer_message_count": customer_message_count,
+        }
+
+    async def classify_ticket(state: AgentState) -> Dict[str, Any]:
+        result = await classifier.classify(state["ticket"], history=state["history"])
+        return {"classification": result}
+
+    async def apply_escalation(state: AgentState) -> Dict[str, Any]:
+        classification = state["classification"]
+        count = state["customer_message_count"]
+        if count >= REPEAT_CONTACT_ESCALATION_THRESHOLD:
+            current_idx = _PRIORITY_ORDER.index(classification.priority)
+            urgent_idx = _PRIORITY_ORDER.index(TicketPriority.URGENT)
+            if current_idx < urgent_idx:
+                logger.info(
+                    "priority_escalated_repeat_contact",
+                    old_priority=classification.priority.value,
+                    new_priority=TicketPriority.URGENT.value,
+                    customer_message_count=count,
+                )
+                classification = classification.model_copy(
+                    update={"priority": TicketPriority.URGENT}
+                )
+        return {"classification": classification}
+
+    async def fetch_order_context(state: AgentState) -> Dict[str, Any]:
+        ticket = state["ticket"]
+        classification = state["classification"]
+        if classification.category.value not in ORDER_RELEVANT_CATEGORIES:
+            return {"order_context": None, "order_used": False}
+
+        order_number = ticket.order_number or classification.extracted_order_number
+        if not order_number:
+            return {"order_context": None, "order_used": False}
+
+        if not shopify.enabled:
+            return {
+                "order_context": "Shopify is not connected — cannot look up order data.",
+                "order_used": False,
+            }
+
+        try:
+            order = await shopify.get_order_by_number(order_number)
+        except Exception as e:
+            logger.warning("shopify_lookup_failed", ticket_id=ticket.id, error=str(e))
+            return {
+                "order_context": f"Order lookup failed (order #{order_number} not found or API error).",
+                "order_used": False,
+            }
+
+        if not order:
+            return {
+                "order_context": f"No order found matching '{order_number}'.",
+                "order_used": False,
+            }
+
+        ticket.order_id = str(order.get("id"))
+        context = shopify.summarize_order(order)
+        return {"order_context": context, "order_used": True, "ticket": ticket}
+
+    async def fetch_knowledge_context(state: AgentState) -> Dict[str, Any]:
+        from agent.knowledge_base import knowledge_base
+
+        classification = state["classification"]
+        history = state["history"]
+        ticket = state["ticket"]
+
+        if classification.category.value not in KB_RELEVANT_CATEGORIES:
+            return {"knowledge_context": None, "kb_used": False}
+
+        query = history[-1].content if history else ticket.body
+        try:
+            chunks = await knowledge_base.search(query, top_k=3)
+        except Exception:
+            return {"knowledge_context": None, "kb_used": False}
+
+        if not chunks:
+            return {"knowledge_context": None, "kb_used": False}
+
+        block = "\n\n---\n\n".join(f"[{c.source}] {c.title}\n{c.content}" for c in chunks)
+        return {"knowledge_context": block, "kb_used": True}
+
+    async def generate_response(state: AgentState) -> Dict[str, Any]:
+        suggestion = await response_engine.generate_suggestion(
+            state["ticket"], state["classification"],
+            order_context=state["order_context"],
+            knowledge_context=state["knowledge_context"],
+            history=state["history"],
+        )
+        if state["customer_message_count"] >= REPEAT_CONTACT_ESCALATION_THRESHOLD:
+            suggestion.requires_human_review = True
+        return {"suggestion": suggestion}
+
+    async def decide_auto_send(state: AgentState) -> Dict[str, Any]:
+        suggestion = state["suggestion"]
+        classification = state["classification"]
+
+        if not settings.AUTO_SEND_ENABLED:
+            return {"auto_sent": False}
+        if suggestion.requires_human_review:
+            return {"auto_sent": False}
+        if suggestion.confidence < settings.AUTO_SEND_MIN_CONFIDENCE:
+            return {"auto_sent": False}
+        if suggestion.suggested_action and suggestion.suggested_action.type.value != "none":
+            return {"auto_sent": False}
+        blocked = {c.strip() for c in settings.AUTO_SEND_BLOCKED_CATEGORIES.split(",") if c.strip()}
+        if classification.category.value in blocked:
+            return {"auto_sent": False}
+
+        from agent.observability import check_daily_cost_cap
+
+        if not await check_daily_cost_cap():
+            return {"auto_sent": False}
+
+        return {"auto_sent": True}
+
+    async def save_results(state: AgentState) -> Dict[str, Any]:
+        from agent.storage import store
+
+        ticket = state["ticket"]
+        classification = state["classification"]
+        suggestion = state["suggestion"]
+        auto_sent = state["auto_sent"]
+
+        ticket.category = classification.category
+        ticket.priority = classification.priority
+        ticket.sentiment = classification.sentiment
+
+        await store.save(ticket, suggestion, auto_sent=auto_sent)
+
+        if auto_sent:
+            await store.add_message(ticket.id, MessageSender.AI.value, suggestion.suggested_response)
+
+        logger.info(
+            "ticket_handled",
+            ticket_id=ticket.id,
+            category=classification.category.value,
+            priority=classification.priority.value,
+            confidence=suggestion.confidence,
+            order_context_used=state["order_used"],
+            kb_used=state["kb_used"],
+            auto_sent=auto_sent,
+            customer_message_count=state["customer_message_count"],
+        )
+
+        return {"ticket": ticket}
+
+    # ── Wire nodes ────────────────────────────────────────
+
+    for name, fn in [
+        ("load_history", load_history),
+        ("classify_ticket", classify_ticket),
+        ("apply_escalation", apply_escalation),
+        ("fetch_order_context", fetch_order_context),
+        ("fetch_knowledge_context", fetch_knowledge_context),
+        ("generate_response", generate_response),
+        ("decide_auto_send", decide_auto_send),
+        ("save_results", save_results),
+    ]:
+        workflow.add_node(name, _traced_node(name, fn))
+
+    # ── Linear pipeline edges ──────────────────────────────
+
+    workflow.add_edge(START, "load_history")
+    workflow.add_edge("load_history", "classify_ticket")
+    workflow.add_edge("classify_ticket", "apply_escalation")
+    workflow.add_edge("apply_escalation", "fetch_order_context")
+    workflow.add_edge("fetch_order_context", "fetch_knowledge_context")
+    workflow.add_edge("fetch_knowledge_context", "generate_response")
+    workflow.add_edge("generate_response", "decide_auto_send")
+    workflow.add_edge("decide_auto_send", "save_results")
+    workflow.add_edge("save_results", END)
+
+    return workflow.compile()
+
+
+def _traced_node(name: str, fn):
+    """Wrap a graph node with timing + trace logging to /tickets/{id}/trace."""
+    async def wrapper(state: AgentState) -> Dict[str, Any]:
+        start = time.monotonic()
+        try:
+            return await fn(state)
+        finally:
+            latency_ms = (time.monotonic() - start) * 1000
+            await record_graph_step(
+                ticket_id=state["ticket"].id,
+                node_name=name,
+                latency_ms=latency_ms,
+            )
+    return wrapper
