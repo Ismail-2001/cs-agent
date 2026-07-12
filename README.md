@@ -1,4 +1,4 @@
-# Customer Support Agent
+# Customer Support AI Employee
 
 AI-powered customer support automation for ecommerce. Classifies incoming tickets,
 pulls real order data from Shopify, drafts a grounded reply, and syncs with Gorgias —
