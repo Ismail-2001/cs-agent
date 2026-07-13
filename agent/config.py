@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
     # stricter limit for the refund action endpoint specifically
     REFUND_RATE_LIMIT_PER_MINUTE: int = 10
+    # stricter limit for the resend-order action endpoint specifically
+    RESEND_RATE_LIMIT_PER_MINUTE: int = 10
 
     # --- Automation policy ---
     AUTO_SEND_ENABLED: bool = False          # if False, every reply is a draft awaiting human approval

@@ -223,6 +223,82 @@ def test_refund_rejects_amount_exceeding_order_total(client):
     assert "exceeds" in r2.json()["detail"]
 
 
+# ── Resend order action ────────────────────────────────────────
+
+
+def test_resend_order_requires_idempotency_key_header(client):
+    c, _ = client
+    r = c.post("/support/tickets/nonexistent/actions/resend-order", headers=AUTH, json={})
+    assert r.status_code == 422
+
+
+def test_resend_order_on_nonexistent_ticket_returns_404(client):
+    c, _ = client
+    r = c.post(
+        "/support/tickets/nonexistent/actions/resend-order",
+        headers={**AUTH, "Idempotency-Key": "resend-key-1"},
+        json={},
+    )
+    assert r.status_code == 404
+
+
+def test_resend_order_without_linked_order_returns_400(client):
+    c, _ = client
+    r = c.post("/support/tickets", headers=AUTH, json={
+        "customer_email": "a@b.com", "subject": "test", "body": "test",
+    })
+    assert r.status_code == 200
+    ticket_id = r.json()["ticket_id"]
+
+    r2 = c.post(
+        f"/support/tickets/{ticket_id}/actions/resend-order",
+        headers={**AUTH, "Idempotency-Key": "resend-key-2"},
+        json={},
+    )
+    assert r2.status_code == 400
+    assert "order_id" in r2.json()["detail"]
+
+
+def test_resend_order_idempotency_replays_instead_of_double_reordering(client):
+    """Same Idempotency-Key twice -> second call returns replayed=True, create_reorder runs once."""
+    import asyncio
+
+    c, cs_module = client
+
+    class FakeShopifyWithResend:
+        enabled = True
+        call_count = 0
+
+        async def get_order_by_id(self, order_id):
+            return {"id": order_id, "total_price": "100.00"}
+
+        async def create_reorder(self, order_id, notify_customer=True):
+            self.call_count += 1
+            return {"new_order_id": 888, "original_order_id": order_id, "call_number": self.call_count}
+
+    fake_shopify = FakeShopifyWithResend()
+    cs_module._agent.shopify = fake_shopify
+
+    r = c.post("/support/tickets", headers=AUTH, json={
+        "customer_email": "a@b.com", "subject": "test", "body": "test",
+    })
+    ticket_id = r.json()["ticket_id"]
+
+    asyncio.run(
+        __import__("agent.storage", fromlist=["store"]).store.update_status(ticket_id, order_id="999")
+    )
+
+    headers = {**AUTH, "Idempotency-Key": "resend-same-key"}
+    r1 = c.post(f"/support/tickets/{ticket_id}/actions/resend-order", headers=headers, json={})
+    r2 = c.post(f"/support/tickets/{ticket_id}/actions/resend-order", headers=headers, json={})
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["replayed"] is False
+    assert r2.json()["replayed"] is True
+    assert fake_shopify.call_count == 1, "create_reorder must only be called ONCE across both requests"
+
+
 def test_rate_limit_returns_429_when_exceeded(client):
     c, _ = client
     settings.RATE_LIMIT_PER_MINUTE = 3

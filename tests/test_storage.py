@@ -84,6 +84,51 @@ async def test_different_idempotency_keys_are_independent(test_store):
     assert (await test_store.get_refund_audit("key-a"))["amount"] == 10.0
 
 
+# ── Resend order audit trail (security-critical) ───────────────
+
+
+async def test_resend_audit_lookup_returns_none_before_any_resend(test_store):
+    result = await test_store.get_resend_audit("resend-key-1")
+    assert result is None
+
+
+async def test_resend_audit_records_and_replays_successful_resend(test_store):
+    await test_store.record_resend_audit(
+        "resend-key-1", ticket_id="t1", order_id="999",
+        status="succeeded", shopify_response={"new_order_id": 888, "original_order_id": "999"},
+    )
+    replay = await test_store.get_resend_audit("resend-key-1")
+    assert replay is not None
+    assert replay["status"] == "succeeded"
+    assert replay["shopify_response"]["new_order_id"] == 888
+
+
+async def test_resend_audit_records_failures_too(test_store):
+    await test_store.record_resend_audit(
+        "resend-key-2", ticket_id="t2", order_id="999",
+        status="failed", error="Shopify API timeout",
+    )
+    replay = await test_store.get_resend_audit("resend-key-2")
+    assert replay["status"] == "failed"
+    assert replay["error"] == "Shopify API timeout"
+
+
+async def test_different_resend_idempotency_keys_are_independent(test_store):
+    await test_store.record_resend_audit("resend-a", ticket_id="t1", order_id="1", status="succeeded")
+    assert await test_store.get_resend_audit("resend-b") is None
+    assert (await test_store.get_resend_audit("resend-a"))["status"] == "succeeded"
+
+
+# ── Webhook idempotency (cross-source isolation) ───────────────
+
+
+async def test_processed_webhook_events_different_sources_same_event_id_are_independent(test_store):
+    """Two different sources with the same event_id must NOT be treated as duplicates."""
+    await test_store.record_processed_webhook_event("evt-42", "gorgias")
+    assert await test_store.get_processed_webhook_event("evt-42", "gorgias") is not None
+    assert await test_store.get_processed_webhook_event("evt-42", "shopify") is None
+
+
 # ── Confidence calibration ─────────────────────────────────────
 
 

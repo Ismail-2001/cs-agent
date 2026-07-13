@@ -172,6 +172,73 @@ class ShopifyClient:
             resp.raise_for_status()
             return resp.json()
 
+    @retry(retry=retry_if_exception(_is_timeout_or_connection_error), before_sleep=_log_retry_attempt, **_EXP_BACKOFF)
+    async def create_reorder(self, order_id: str, notify_customer: bool = True) -> Dict[str, Any]:
+        """Creates a new draft order with the same line items as the original, then completes it.
+        This is the 'resend' action — used when a customer didn't receive their order and
+        a replacement needs to be shipped. ALWAYS call this only after explicit human approval —
+        see api/customer_support.py POST /tickets/{id}/actions/resend-order."""
+        if not self.enabled:
+            raise ShopifyNotConfigured("Shopify credentials not set in .env")
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            order_resp = await client.get(
+                f"{self.base_url}/orders/{order_id}.json", headers=self.headers
+            )
+            if order_resp.status_code == 404:
+                raise ValueError(f"Order {order_id} not found in Shopify")
+            order_resp.raise_for_status()
+            original_order = order_resp.json().get("order", {})
+
+            line_items = [
+                {"variant_id": li["variant_id"], "quantity": li["quantity"]}
+                for li in original_order.get("line_items", [])
+                if li.get("variant_id")
+            ]
+            if not line_items:
+                raise ValueError(f"Order {order_id} has no line items with variant IDs — cannot reorder")
+
+            draft_payload = {
+                "draft_order": {
+                    "line_items": line_items,
+                    "note": f"Resend of original order {original_order.get('name', order_id)} — "
+                            f"created by AI support agent (human-approved)",
+                    "shipping_address": original_order.get("shipping_address"),
+                    "email": original_order.get("email"),
+                    "customer": {"id": original_order["customer"]["id"]} if original_order.get("customer") else None,
+                }
+            }
+            draft_resp = await client.post(
+                f"{self.base_url}/draft_orders.json", headers=self.headers, json=draft_payload
+            )
+            draft_resp.raise_for_status()
+            draft_order = draft_resp.json().get("draft_order", {})
+            draft_id = draft_order["id"]
+
+            complete_resp = await client.post(
+                f"{self.base_url}/draft_orders/{draft_id}/complete.json",
+                headers=self.headers,
+                json={"draft_order": {"idempotency_key": f"resend-{order_id}"}},
+            )
+            complete_resp.raise_for_status()
+            new_order = complete_resp.json().get("draft_order", {})
+
+            if notify_customer:
+                try:
+                    await client.post(
+                        f"{self.base_url}/orders/{new_order['id']}/send_receipt.json",
+                        headers=self.headers,
+                    )
+                except Exception:
+                    logger.warning("resend_order_receipt_failed", order_id=order_id, new_order_id=new_order["id"])
+
+            return {
+                "new_order_id": new_order["id"],
+                "new_order_name": new_order.get("name"),
+                "original_order_id": order_id,
+                "original_order_name": original_order.get("name"),
+            }
+
     @staticmethod
     def summarize_order(order: Dict[str, Any]) -> str:
         """Turn a raw Shopify order object into a short, LLM-friendly summary."""

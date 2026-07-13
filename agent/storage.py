@@ -61,10 +61,21 @@ CREATE TABLE IF NOT EXISTS refund_audit (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS resend_audit (
+    idempotency_key TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    status TEXT NOT NULL,           -- 'succeeded' or 'failed'
+    shopify_response TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_webhook_events (
-    event_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
     source TEXT NOT NULL,
-    processed_at TEXT NOT NULL
+    processed_at TEXT NOT NULL,
+    PRIMARY KEY (event_id, source)
 );
 
 CREATE TABLE IF NOT EXISTS traces (
@@ -329,13 +340,55 @@ class TicketStore:
             )
             await db.commit()
 
+    async def get_resend_audit(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        """If this idempotency key was already processed, return the stored result instead
+        of letting the caller re-execute a real reorder."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM resend_audit WHERE idempotency_key = ?", (idempotency_key,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "idempotency_key": row["idempotency_key"],
+                "ticket_id": row["ticket_id"],
+                "order_id": row["order_id"],
+                "status": row["status"],
+                "shopify_response": json.loads(row["shopify_response"]) if row["shopify_response"] else None,
+                "error": row["error"],
+                "created_at": row["created_at"],
+            }
+
+    async def record_resend_audit(
+        self,
+        idempotency_key: str,
+        ticket_id: str,
+        order_id: str,
+        status: str,
+        shopify_response: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        now = datetime.utcnow().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO resend_audit (idempotency_key, ticket_id, order_id, status, "
+                "shopify_response, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    idempotency_key, ticket_id, order_id, status,
+                    json.dumps(shopify_response) if shopify_response else None, error, now,
+                ),
+            )
+            await db.commit()
+
     async def get_processed_webhook_event(self, event_id: str, source: str) -> Optional[Dict[str, Any]]:
         """If this webhook event was already processed, return it so the caller can skip
         re-processing instead of duplicating work."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT * FROM processed_webhook_events WHERE event_id = ?", (event_id,)
+                "SELECT * FROM processed_webhook_events WHERE event_id = ? AND source = ?", (event_id, source)
             )
             row = await cursor.fetchone()
             if not row:

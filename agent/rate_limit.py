@@ -49,3 +49,7 @@ async def rate_limit_default(request: Request) -> None:
 
 async def rate_limit_refund(request: Request) -> None:
     _check_rate_limit(_client_ip(request), settings.REFUND_RATE_LIMIT_PER_MINUTE)
+
+
+async def rate_limit_resend(request: Request) -> None:
+    _check_rate_limit(_client_ip(request), settings.RESEND_RATE_LIMIT_PER_MINUTE)

@@ -197,8 +197,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 | **Webhook secrets** | Gorgias (`GORGIAS_WEBHOOK_SECRET`) and generic inbound (`INBOUND_WEBHOOK_SECRET`) each need their own shared secret sent as a header, since those callers can't send an API key. |
 | **Rate limiting** | Per-IP sliding window, 60/min default on everything, 10/min on the refund endpoint specifically. Returns 429. |
 | **Refund idempotency** | Every refund call requires an `Idempotency-Key` header. The same key sent twice replays the first result instead of refunding twice — protects against retries, double-clicks, and network blips. |
+| **Resend-order idempotency** | Same protection for the resend-order action — same key replays, no duplicate orders. |
 | **Refund amount cap** | The requested amount is checked against the real Shopify order total before any refund is attempted; a request over the order total is rejected outright. |
 | **Refund audit trail** | Every attempt (success or failure) is logged in the `refund_audit` table — who, when, how much, and the raw Shopify response. |
+| **Resend-order audit trail** | Every attempt (success or failure) is logged in the `resend_audit` table — who, when, which order, and the raw Shopify response. |
 | **Prompt injection defense-in-depth** | Both the classifier and response engine are told customer text is untrusted data, not instructions — on top of the hard-coded (not prompt-based) auto-send/action gates that don't trust the model's word for it either way. |
 | **CORS** | Set `ALLOWED_ORIGINS` to your dashboard's domain(s); empty means no browser JavaScript can call this API at all (server-to-server calls are unaffected). |
 | **No leaked internals** | A global exception handler logs the real error server-side and returns a generic `{"detail": "Internal server error"}` to the client — no stack traces or exception text ever reach a caller. |
@@ -216,7 +218,7 @@ pytest tests/ -v
 # (Add OPENROUTER_API_KEY=dummy or GOOGLE_API_KEY=dummy in CI — tests mock the LLM)
 ```
 
-All 113+ tests run with the LLM and Shopify calls faked out — no real API key or network
+All 122 tests run with the LLM and Shopify calls faked out — no real API key or network
 needed, so this runs the same in CI as it does locally. Covers: memory/threading, the
 auto-send safety gates (confidence, blocked categories, suggested_action blocking),
 repeat-contact escalation, RAG chunking/search relevance, self-improvement edit tracking,
@@ -325,6 +327,7 @@ inclusion are tested in `tests/test_eval_versioning.py`.
 | GET | `/support/tickets/{id}/suggestion` | Re-fetch the stored AI draft |
 | POST | `/support/tickets/{id}/respond` | Human sends the (possibly edited) reply; logs the edit for self-improvement tracking |
 | POST | `/support/tickets/{id}/actions/refund` | Human-approved: executes a real Shopify refund. Requires `Idempotency-Key` header. |
+| POST | `/support/tickets/{id}/actions/resend-order` | Human-approved: creates a replacement order in Shopify. Requires `Idempotency-Key` header. |
 | POST | `/support/knowledge-base` | Add/replace a KB document (policy, FAQ, spec sheet) |
 | POST | `/support/knowledge-base/sync-shopify` | Auto-ingest Shopify policies + product catalog |
 | GET | `/support/knowledge-base` | KB chunk count |
@@ -342,16 +345,14 @@ inclusion are tested in `tests/test_eval_versioning.py`.
 ## What's stubbed vs. real
 
 Real: classification, memory/threading, Shopify order lookups, RAG knowledge base search,
-response drafting, suggested actions, refund execution, the auto-send + escalation gates,
-Gorgias reply/internal-note posting, generic multi-channel ingestion, edit-rate tracking,
+response drafting, suggested actions, refund execution, resend-order execution, the auto-send + escalation gates,
+Gorgias reply/internal-note posting, Gorgias webhook idempotency, generic multi-channel ingestion, edit-rate tracking,
 full pipeline tracing, real per-call cost tracking with a daily cap circuit breaker,
 confidence calibration reporting, a golden-dataset eval harness, API key auth, rate
-limiting, refund idempotency/audit/amount-capping, SQLite persistence.
+limiting, refund/resend idempotency/audit, SQLite persistence.
 
 Still a stub, by design — build these next as the client roster grows:
 - `/support/analytics/agents` (per-human-agent performance) has no data source yet
-- `resend_order` suggested_action type exists in the model but has no execution endpoint yet
-  (unlike refund) — add one the same way if a client needs it
 - SQLite (tickets, KB, traces, costs) is fine for one client on Render's free tier; move to
   Supabase/Postgres + pgvector once you're running multiple clients or need concurrent writers
 - No retry/backoff on the Shopify calls yet — add `tenacity` if you see
@@ -360,9 +361,6 @@ Still a stub, by design — build these next as the client roster grows:
   single Render instance, not for a multi-instance deploy (move to Redis if you scale that way)
 - The eval dataset (15 cases) is a starting skeleton, not comprehensive coverage — it should
   grow from real edited tickets over time, per the Evals section above
-- Gorgias `ticket-created` webhook is not idempotent — Gorgias uses at-least-once delivery,
-  so a redelivered event could append a duplicate customer message to the thread and run the
-  pipeline twice. The refund endpoint has idempotency protection; this webhook doesn't yet.
 
 ## Pricing
 

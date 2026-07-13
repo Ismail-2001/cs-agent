@@ -20,7 +20,7 @@ from agent.models import (
     SupportTicket,
     TicketChannel,
 )
-from agent.rate_limit import rate_limit_default, rate_limit_refund
+from agent.rate_limit import rate_limit_default, rate_limit_refund, rate_limit_resend
 from agent.storage import store
 from agent.support_agent import CustomerSupportAgent
 from integrations.gorgias import GorgiasClient, GorgiasNotConfigured
@@ -310,6 +310,67 @@ async def approve_refund(
     await store.update_status(ticket_id, status="resolved")
     logger.info("refund_approved_and_processed", ticket_id=ticket_id, order_id=order_id, amount=req.amount)
     return {"ticket_id": ticket_id, "order_id": order_id, "refund": result, "replayed": False}
+
+
+class ResendOrderActionRequest(BaseModel):
+    notify_customer: bool = True
+    reason: str = "Replacement order — item not received"
+
+
+@router.post("/tickets/{ticket_id}/actions/resend-order", dependencies=[Depends(rate_limit_resend)])
+async def approve_resend_order(
+    ticket_id: str,
+    req: ResendOrderActionRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+):
+    """Creates a new Shopify order with the same items as the original, then completes it
+    so a replacement is shipped. This endpoint is never called automatically — a human
+    always calls this explicitly, e.g. by clicking 'Approve resend' on the AI's
+    suggested_action in your dashboard.
+
+    Requires an `Idempotency-Key` header. If the same key is sent twice, the second call
+    returns the FIRST call's result instead of creating a duplicate order."""
+    existing = await store.get_resend_audit(idempotency_key)
+    if existing:
+        logger.info("resend_idempotent_replay", idempotency_key=idempotency_key, ticket_id=ticket_id)
+        return {"ticket_id": existing["ticket_id"], "order_id": existing["order_id"],
+                "resend": existing["shopify_response"], "replayed": True}
+
+    row = await store.get(ticket_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    order_id = row["ticket"].get("order_id")
+    if not order_id:
+        raise HTTPException(status_code=400, detail="Ticket has no linked order_id — look up the order first")
+
+    try:
+        order = await _agent.shopify.get_order_by_id(order_id)
+    except ShopifyNotConfigured:
+        raise HTTPException(status_code=400, detail="Shopify is not configured")
+
+    if not order:
+        raise HTTPException(status_code=404, detail=f"Order {order_id} not found in Shopify")
+
+    try:
+        result = await _agent.shopify.create_reorder(order_id=order_id, notify_customer=req.notify_customer)
+    except Exception as e:
+        logger.error("resend_failed", ticket_id=ticket_id, order_id=order_id, error=str(e))
+        await store.record_resend_audit(
+            idempotency_key, ticket_id, order_id, status="failed", error=str(e)
+        )
+        raise HTTPException(status_code=502, detail=f"Resend failed: {e}")
+
+    await store.record_resend_audit(
+        idempotency_key, ticket_id, order_id,
+        status="succeeded", shopify_response=result,
+    )
+    await store.add_message(
+        ticket_id, MessageSender.AGENT.value,
+        f"[Action taken] Replacement order created. Reason: {req.reason}",
+    )
+    await store.update_status(ticket_id, status="resolved")
+    logger.info("resend_approved_and_processed", ticket_id=ticket_id, order_id=order_id)
+    return {"ticket_id": ticket_id, "order_id": order_id, "resend": result, "replayed": False}
 
 
 # ── Knowledge Base (RAG) ─────────────────────────────────────
