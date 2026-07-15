@@ -15,7 +15,17 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: GOOGLE_API_VALUE
+      - key: GOOGLE_API_KEY
         sync: false  # Set manually in dashboard
       - key: PYTHON_VERSION
         value: "3.12.0"
+      - key: TENANT_NAME
+        sync: false  # Required - set to client name
+      - key: API_KEY
+        sync: false  # Required - generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+      - key: SHOPIFY_ACCESS_TOKEN
+        sync: false  # Required for order lookups
+      - key: SHOPIFY_SHOP_DOMAIN
+        sync: false  # Required - e.g. your-store.myshopify.com
+      - key: GORGIAS_API_KEY
+        sync: false  # Required for ticket sync

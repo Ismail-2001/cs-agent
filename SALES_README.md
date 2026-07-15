@@ -40,8 +40,8 @@ Customer message → AI reads your Shopify store → AI drafts reply
 
 | Plan | For who | One-time setup | Monthly |
 |------|---------|:-:|:-:|
-| Solo | 1 store, you are support | $1,500 | $0 |
-| Growing | 1 store, you have a team | $3,000 | $1,000 |
+| Starter | 1 store, you are support | $1,800–$3,500 | $0 |
+| Growth | 1 store, you have a team | $3,500–$7,000 | $900–$1,800 |
 | Enterprise | Multiple stores | Custom | Custom |
 
 No per-ticket fees. No usage caps. No surprise bills.
@@ -81,5 +81,5 @@ This isn't a generic chatbot. It reads your orders, your products, your policies
 
 I'll connect it to your Shopify store and show you handling real tickets in 5 minutes.
 
-**Email:** your@email.com
-**LinkedIn:** your-linkedin
+**Email:** [REPLACE WITH YOUR EMAIL]
+**LinkedIn:** [REPLACE WITH YOUR LINKEDIN PROFILE]
