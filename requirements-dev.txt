@@ -1,3 +1,5 @@
+# Dev/test dependencies. Installs the app's runtime deps first, then test tooling.
 -r requirements.txt
+
 pytest==8.3.3
 pytest-asyncio==0.24.0

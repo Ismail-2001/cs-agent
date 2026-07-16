@@ -26,13 +26,19 @@ jobs:
       - name: Run tests
         env:
           TENANT_NAME: test
-          GOOGLE_API_KEY: fake-key-for-ci
         run: |
           python -m pytest tests/ -v --tb=short
 
-      - name: Run evals
+      # Evals make REAL LLM calls, so they only run when an API key is
+      # configured as a repo secret. Without it they skip (not fail) so the
+      # build stays green in forked/secret-less environments.
+      - name: Run evals (if API key present)
         env:
           TENANT_NAME: test
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "OPENROUTER_API_KEY not set — skipping evals (requires real LLM calls)"
+            exit 0
+          fi
           python -m evals.run_evals

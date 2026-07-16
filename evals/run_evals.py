@@ -1,6 +1,7 @@
 """
-Golden-dataset eval runner. Makes REAL calls to Gemini (needs GOOGLE_API_KEY) against
-every case in golden_dataset.json and scores the output — this is what tells you whether
+Golden-dataset eval runner. Makes REAL calls to the configured LLM provider
+(OpenRouter by default; needs OPENROUTER_API_KEY) against every case in
+golden_dataset.json and scores the output — this is what tells you whether
 a prompt change made things better or worse, instead of guessing from vibes.
 
 Usage:
