@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpen, Sparkles, Search, Plus } from "lucide-react";
+import { BookOpen, Sparkles, Search, Plus, AlertCircle } from "lucide-react";
 import { api } from "../lib/api";
 import type { Connection } from "../lib/api";
 
@@ -7,6 +7,7 @@ export function KnowledgeBasePage({ connection }: { connection: Connection }) {
   const [chunkCount, setChunkCount] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
+  const [syncError, setSyncError] = useState(false);
 
   const [source, setSource] = useState("");
   const [title, setTitle] = useState("");
@@ -25,12 +26,14 @@ export function KnowledgeBasePage({ connection }: { connection: Connection }) {
   async function handleSync() {
     setSyncing(true);
     setSyncMessage("");
+    setSyncError(false);
     try {
       const res = await api.kbSyncShopify(connection);
       setSyncMessage(`Synced — ${res.total_chunks} chunks ingested from Shopify.`);
       refreshStatus();
     } catch {
       setSyncMessage("Sync failed — check Shopify is connected in the sidebar status.");
+      setSyncError(true);
     } finally {
       setSyncing(false);
     }
@@ -82,7 +85,18 @@ export function KnowledgeBasePage({ connection }: { connection: Connection }) {
           <Sparkles className="w-3.5 h-3.5" /> {syncing ? "Syncing…" : "Sync from Shopify"}
         </button>
       </div>
-      {syncMessage && <p className="text-xs text-ink-600 -mt-4 mb-6">{syncMessage}</p>}
+      {syncError && (
+        <div className="rounded-xl2 bg-rose-100 text-rose-700 text-sm px-4 py-3 mb-6 flex items-start gap-2.5">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p>{syncMessage}</p>
+            <button onClick={handleSync} className="mt-2 text-xs font-medium underline hover:text-rose-900 transition-colors">
+              Try again
+            </button>
+          </div>
+        </div>
+      )}
+      {!syncError && syncMessage && <p className="text-xs text-ink-600 -mt-4 mb-6">{syncMessage}</p>}
 
       <section className="mb-8">
         <h2 className="font-display text-lg text-ink-900 mb-3">Add content manually</h2>

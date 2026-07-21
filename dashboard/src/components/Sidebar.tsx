@@ -44,11 +44,11 @@ export function Sidebar({
           Auto-send {health?.auto_send_enabled ? "on" : "off"}
         </div>
         <div className="flex items-center gap-2 text-xs text-white/50">
-          <span className={`w-1.5 h-1.5 rounded-full ${health?.shopify_connected ? "bg-teal" : "bg-white/20"}`} />
+          <span className={`w-1.5 h-1.5 rounded-full ${health?.shopify_connected ? "bg-teal" : "bg-gold"}`} />
           Shopify {health?.shopify_connected ? "connected" : "off"}
         </div>
         <div className="flex items-center gap-2 text-xs text-white/50">
-          <span className={`w-1.5 h-1.5 rounded-full ${health?.gorgias_connected ? "bg-teal" : "bg-white/20"}`} />
+          <span className={`w-1.5 h-1.5 rounded-full ${health?.gorgias_connected ? "bg-teal" : "bg-gold"}`} />
           Gorgias {health?.gorgias_connected ? "connected" : "off"}
         </div>
         <button
