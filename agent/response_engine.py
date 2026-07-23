@@ -82,7 +82,9 @@ class _RawSuggestion(BaseModel):
 class ResponseGenerationEngine:
     def __init__(self):
         self.model_name = (
-            settings.GEMINI_MODEL if settings.GOOGLE_API_KEY else settings.OPENROUTER_MODEL
+            settings.GROQ_MODEL if settings.GROQ_API_KEY
+            else settings.GEMINI_MODEL if settings.GOOGLE_API_KEY
+            else settings.OPENROUTER_MODEL
         )
         self.fallback_model_name = settings.FALLBACK_MODEL
         self.llm = get_llm(temperature=0.3).with_structured_output(_RawSuggestion, include_raw=True)

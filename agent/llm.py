@@ -13,6 +13,7 @@ import structlog
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
@@ -44,6 +45,13 @@ def _log_llm_retry(retry_state) -> None:
 
 
 def get_llm(temperature: float = 0.0) -> BaseChatModel:
+    if settings.GROQ_API_KEY:
+        return ChatGroq(
+            model=settings.GROQ_MODEL,
+            api_key=settings.GROQ_API_KEY.get_secret_value(),
+            temperature=temperature,
+            timeout=30,
+        )
     if settings.GOOGLE_API_KEY:
         return ChatGoogleGenerativeAI(
             model=settings.GEMINI_MODEL,
@@ -64,7 +72,7 @@ def get_llm(temperature: float = 0.0) -> BaseChatModel:
             },
         )
     raise RuntimeError(
-        "No LLM API key configured. Set GOOGLE_API_KEY or OPENROUTER_API_KEY "
+        "No LLM API key configured. Set GROQ_API_KEY, GOOGLE_API_KEY, or OPENROUTER_API_KEY "
         "in your .env file."
     )
 

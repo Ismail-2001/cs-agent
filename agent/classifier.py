@@ -65,7 +65,9 @@ extract just the number/code into extracted_order_number. Otherwise leave it nul
 class TicketClassifier:
     def __init__(self):
         self.model_name = (
-            settings.GEMINI_MODEL if settings.GOOGLE_API_KEY else settings.OPENROUTER_MODEL
+            settings.GROQ_MODEL if settings.GROQ_API_KEY
+            else settings.GEMINI_MODEL if settings.GOOGLE_API_KEY
+            else settings.OPENROUTER_MODEL
         )
         self.fallback_model_name = settings.FALLBACK_MODEL
         self.llm = get_llm(temperature=0.0).with_structured_output(ClassificationResult, include_raw=True)

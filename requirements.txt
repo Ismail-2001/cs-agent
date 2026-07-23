@@ -10,5 +10,6 @@ structlog==24.4.0
 aiosqlite==0.20.0
 numpy==1.26.4
 langchain-anthropic==0.3.22
+langchain-groq==0.2.5
 tenacity==9.1.4
 langgraph==0.3.34

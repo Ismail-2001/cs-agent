@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     TENANT_NAME: str
 
     # --- LLM ---
+    # Provider priority: GROQ_API_KEY > GOOGLE_API_KEY > OPENROUTER_API_KEY
+    GROQ_API_KEY: Optional[SecretStr] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GOOGLE_API_KEY: Optional[SecretStr] = None
     GEMINI_MODEL: str = "gemini-2.0-flash"
     OPENROUTER_API_KEY: Optional[SecretStr] = None
